@@ -8,18 +8,23 @@ import re
 from datetime import datetime, timedelta
 import requests
 
-#Load config
-config = {}
-config_path = os.path.join('conf', 'rss_feed.env')
-with open(config_path) as f:
-    for line in f:
-        if line.strip() and not line.startswith('#'):
-            key, value = line.strip().split('=', 1)
-            # Convert numeric values
-            if value.isdigit():
-                config[key] = int(value)
-            else:
-                config[key] = value.strip('"')
+# Configuration file with the list of desired torrents and their corresponding URIs
+config_file = "conf/rss.conf"
+
+# Directory to save downloaded files
+download_dir = ""
+
+# Completed directory
+completed_dir = ""
+
+# File to record hashes of downloaded torrents
+hash_file = "downloaded_torrents.db"
+
+lock_file = "rss_feed.lock"
+max_lock_age = 3600
+
+# Discord Webhook URL for sending notifications
+webhook_url = "https://discord.com/api/webhooks/1274578113308786748/DEyg6GEIGLIqxqL0TlkIuwdGvj3zMmZb7VVE_LclLRZRw-ltDs0L8jm7J3nMmYAR7peR"
 
 def send_discord_message(message):
     """Send a message to Discord with a 2000 character limit."""

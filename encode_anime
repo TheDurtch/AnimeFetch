@@ -129,8 +129,6 @@ nvencc  \
        --perf-monitor "all" \
        --output-buf 128 \
        --output-thread 1 \
-       --ssim \
-       --psnr \
        --mv-precision q-pel \
        --refs-forward 4\
        -i "$input_file" \
