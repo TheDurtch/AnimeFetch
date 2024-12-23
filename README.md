@@ -18,7 +18,7 @@ I have mine set to run every 15 mintes via cron
 Feel free to change "rss_feed.example.sh" to suit your needs.
 
 
-The encode_anime script watches a dirctory and when a file matching the config enter it get to work encoding using NvEnc
+The encode_anime script watches a dirctory and when a file matching the config enter it get to work encoding using NvEnc (It's right now hardcoded to av1 encoding, I am thinking of added 2 modes tho, HEVC and AV1 mode)
 
 The encpde.conf can be a bit daunting for some so let me explain it.
 
