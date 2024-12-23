@@ -4,7 +4,7 @@ TO-DO: Make README more friendly
 
 This is my first time using Python and I am trying to learn while making this script
 
-
+make sure to update the varibles in rss_feed.py before using
 
 You'll need Aria2c (for rss-feed.py) and NvEnc (for encode_anime) to use these scripts.
 
