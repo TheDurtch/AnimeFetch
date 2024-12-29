@@ -1,0 +1,209 @@
+#!/bin/bash
+
+CONFIG_PATH="$(dirname "$0")/conf/encode_anime.conf"
+
+if [ ! -f "$CONFIG_PATH" ]; then
+    cat > "$CONFIG_PATH" << 'EOF'
+# Set your directories below:
+WATCHED_DIR=""
+DEST_DIR=""
+TMP_DIR=""
+CONFIG_FILE=""
+ENCODING_DIR=""
+
+# Discord Webhook URL
+DISCORD_WEBHOOK_URL="" # Script will throw errors if this is not set but shouldn't crash
+
+# Retry configuration
+RETRY_DELAY_MINUTES=5  # How many minutes to wait before retrying if encoding fails
+MAX_RETRIES=10          # How many retries before giving up
+EOF
+    echo "Config file created at $CONFIG_PATH. Please fill in the required paths."
+    exit 1
+fi
+
+echo "Config path is $CONFIG_PATH"
+source "$CONFIG_PATH"
+
+# Verify config values
+for var in WATCHED_DIR DEST_DIR TMP_DIR CONFIG_FILE ENCODING_DIR; do
+    if [ -z "${!var}" ]; then
+        echo "Error: $var is not set in config file"
+        exit 1
+    fi
+done
+
+
+send_discord_message() {
+    message="$1"
+    # Replace double quotes with escaped double quotes
+    message="${message//\"/\\\"}"
+    local payload="{\"content\": \"$message\"}"
+    response=$(curl -s -H "Content-Type: application/json" -X POST -d "$payload" "$DISCORD_WEBHOOK_URL")
+    if [[ $response == *"code"* ]]; then
+        echo "Error sending message to Discord: $response"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Function to process new files
+process_new_file() {
+    original="$1"
+    new="$2"
+    file="$3"
+    offset="$4"
+
+    echo "Processing file: $file with offset $offset"
+    mkdir -p "$DEST_DIR/$new" "$ENCODING_DIR"
+
+    # Escape the original name for regex use
+    original_escaped=$(printf '%s\n' "$original" | sed 's:[][\/.^$*()]:\\&:g')
+
+    # Pattern for filenames with 'SxxEyy' format
+    regex1="${original_escaped}([[:space:]]|\.)S[0-9]+E([0-9]+).*\.mkv$"
+    # Pattern for filenames with direct episode numbers, potentially with periods as separators
+    regex2="${original_escaped}.* - ([0-9]+).*\.mkv$"
+    # Pattern for filenames that use periods and have 'SxxEyy' without spaces
+    regex3="${original_escaped}\.S[0-9]+E([0-9]+).*\.mkv$"
+
+    echo "Using regex patterns:"
+    echo "  regex1: $regex1"
+    echo "  regex2: $regex2"
+    echo "  regex3: $regex3"
+
+    episode_number="" # Initialize episode_number as empty
+
+    if [[ $file =~ $regex1 ]]; then
+        episode_number=${BASH_REMATCH[2]}
+        echo "Matched regex1: Episode number is $episode_number"
+    elif [[ $file =~ $regex2 ]]; then
+        episode_number=${BASH_REMATCH[1]}
+        echo "Matched regex2: Episode number is $episode_number"
+    elif [[ $file =~ $regex3 ]]; then
+        episode_number=${BASH_REMATCH[2]}
+        echo "Matched regex3: Episode number is $episode_number"
+    else
+        # If no pattern matched, send a Discord message and exit
+        error_message="Failed to extract episode number for file: $file. Unable to process further."
+        echo "$error_message"
+        send_discord_message "$error_message"
+        exit 1
+    fi
+
+    if [[ -z "$episode_number" ]]; then
+        echo "Failed to extract episode number for file: $file"
+        return
+    fi
+
+    # Apply the offset
+    episode_number=$((10#$episode_number + offset))
+    echo "Adjusted episode number with offset: $episode_number"
+
+    # Format the episode number to ensure it has at least two digits
+    episode_number=$(printf "%02d" "$episode_number")
+    echo "Final formatted episode number: $episode_number"
+
+    input_file="$WATCHED_DIR/$file"
+    temp_output_file="$ENCODING_DIR/$new - $episode_number.mkv"
+    final_output_file="$DEST_DIR/$new/$new - $episode_number.mkv"
+
+    # Create the directory for the final output file
+    mkdir -p "$(dirname "$final_output_file")"
+
+    # Set/Reset attepts to 0 for current run
+    attempt=0
+    while [ $attempt -le $MAX_RETRIES ]; do
+        echo "Encoding attempt $((attempt + 1)) for $input_file"
+nvencc  \
+       --qvbr 35 \
+       --codec av1 \
+       --preset P7 \
+       --output-depth 10 \
+       --profile main10 \
+       --max-bitrate 10000 \
+       --aq \
+       --aq-temporal \
+       --bref-mode middle \
+       --bframes 8 \
+       --ref 128 \
+       --lookahead 32 \
+       --multiref-l0 7 \
+       --multiref-l1 7 \
+       --nonrefp \
+       --colormatrix bt709 \
+       --colorprim bt709 \
+       --transfer bt709 \
+       --output-buf 128 \
+       --output-thread 1 \
+       --mv-precision q-pel \
+       --refs-forward 4\
+       -i "$input_file" \
+       --audio-codec libopus \
+       --audio-bitrate 100 \
+       --sub-copy \
+       -o "$temp_output_file"
+
+
+        if [ $? -eq 0 ]; then
+            # If encoding succeeds then send disk=cord message and move file
+            echo "Encoding succeeded for $input_file! after $((attempt)) attempt(s)"
+            mv "$temp_output_file" "$final_output_file"
+            if [ $attempt -gt 0 ]; then
+                message="$new - $episode_number.mkv is done! (after $((attempt)) attempts)"
+            else
+                message="$new - $episode_number.mkv is done!"
+            fi
+
+            send_discord_message "$message"
+            if [ -n "$TMP_DIR" ]; then
+                mkdir -p "$TMP_DIR"
+                mv "$input_file" "$TMP_DIR"
+            fi
+            return
+        else
+            # If encoding fails for any reason wait for $RETRY_DELAY_MINUTES minutes and try again for $MAX_RETRIES amount of times
+            # Encodes can fail be cause they start too soon because Resilio sync moves them into the folder and the script sees it before it's done? ¯\_(ツ)_/¯
+            # All I know is nvencc would fail with "[matroska,webm @ 0x615f660fd100] EBML header parsing failed" and running it again works
+            # Have $MAX_RETRIES so we do try endlessly on a broken file
+            # This error loop doesn't seem to help, more debugging required..
+            # It is helping sometimes, gonna crank the retries to 10 and see what happens
+            echo "Encoding failed for $input_file..."
+            sync
+            if [ $attempt -lt $MAX_RETRIES ]; then
+                echo "Waiting for $RETRY_DELAY_MINUTES minutes before retrying..."
+                sleep $((RETRY_DELAY_MINUTES * 60))
+            fi
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    # If we reach here, encoding failed after retries
+    error_message="Failed to encode $file after $((attempt)) attempts."
+    echo "$error_message"
+    send_discord_message "$error_message"
+    exit 1
+}
+
+
+# Main loop to process files
+while true; do
+    declare -A config
+    while IFS=: read -r orig new offset; do
+        config["$orig"]="$new:$offset"
+    done < "$CONFIG_FILE"
+
+    for file in "$WATCHED_DIR"/*; do
+        [ -d "$file" ] || [ -z "$file" ] && continue
+        filename=$(basename "$file")
+        for orig in "${!config[@]}"; do
+            if [[ $filename == "${orig}"* ]]; then
+                IFS=: read -r new offset <<< "${config[$orig]}"
+                process_new_file "$orig" "$new" "$filename" "$offset"
+            fi
+        done
+    done
+    sleep 120
+done
